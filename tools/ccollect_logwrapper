@@ -27,11 +27,18 @@
 #
 CCOLLECT_CONF=${CCOLLECT_CONF:-/etc/ccollect}
 LOGCONF=$CCOLLECT_CONF/logwrapper
+SOURCES=$(ls ${CCOLLECT_CONF}/sources/)
 
 logdir="${LOGCONF}/destination"
 CDATE="date +%Y%m%d-%H%M"
 we="$(basename $0)"
 pid=$$
+
+if [ -e ${LOGCONF}/mail ]; then
+    MAIL=1
+else
+    MAIL=0
+fi
 
 export ccollect_logfile="${logdir}/$(${CDATE}).${pid}"
 
@@ -60,5 +67,48 @@ touch "${ccollect_logfile}" || _exit_err "Failed to create ${ccollect_logfile}"
 # First line in the logfile is always the commandline
 echo ccollect "$@" > "${ccollect_logfile}" 2>&1
 ccollect "$@" >> "${ccollect_logfile}" 2>&1
+
+
+if [ -n ${MAIL} ]; then
+    #Variables
+    date=$(${CDATE})
+    faileddir=${logdir}/failed
+    curlogdir=${logdir}/${date}-${pid}
+
+    #Ensure that failed dir exists
+    if [ ! -d ${faileddir} ]; then
+	mkdir ${faileddir}
+    fi
+
+    #Creat the current log directory
+    mkdir ${curlogdir}
+
+    #Go through all sources and create a seperate file for each
+    for source in ${SOURCES}; do
+        grep -e ^."${source}"] ${ccollect_logfile} > ${curlogdir}/${source}
+    done
+
+    #remove the big logfile
+    rm ${ccollect_logfile}
+
+    #Check for errors
+    for file in $(ls ${curlogdir}); do
+        grep -i "error" ${curlogdir}/${file} >/dev/null 2>&1
+
+        #Copy the failed ones into the failed directory
+        ret_val=$(echo $?)
+	if [ ${ret_val} -eq 0 ]; then
+            cp ${curlogdir}/${file} ${faileddir}/${file}.failed.txt
+        fi
+    done
+
+    #Send for each fail a seperate mail to each mail-address configured
+    for fail in $(ls ${faileddir}); do
+        for email in $(cat ${LOGCONF}/mail); do
+           ( mail -s "Backup failed" ${email} < ${faileddir}/${fail} >> ${curlogdir}/mail.log 2>&1 & )
+        done
+        rm ${faileddir}/${fail}
+    done
+fi
 
 _echo "Finished."
